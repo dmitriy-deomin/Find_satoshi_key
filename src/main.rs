@@ -1,3 +1,5 @@
+mod ice_library;
+
 extern crate num_cpus;
 
 use std::{
@@ -11,17 +13,11 @@ use std::{
     io::{BufRead, BufReader},
     path::Path,
 };
-use std::str::FromStr;
-
 use std::sync::{Arc};
 use rand::Rng;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::io::stdout;
-use bitcoin::{Address, PrivateKey, PublicKey};
-use bitcoin::Network::Bitcoin;
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
-
 use tokio::task;
 
 const BACKSPACE: char = 8u8 as char;
@@ -36,18 +32,19 @@ async fn main() {
     let conf = match lines_from_file(&file_cong) {
         Ok(text) => { text }
         Err(_) => {
-            let t = format!("0 -CPU core 0/{} (0 - speed test 1 core)", num_cpus::get());
+            let t = format!("0 -CPU core 0/{} (0 - speed test 1 core)\n\
+            *,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,*,* -custom find digit(0123456789ABCDEF)", num_cpus::get());
             add_v_file(&file_cong, &t);
-            vec![t.to_string()]
+            lines_from_file(&file_cong).expect("ERROR READ CONFIG FILE")
         }
     };
     //---------------------------------------------------------------------
 
-    let stroka_0_all = &conf[0].to_string();
-    let mut num_cores: u8 = first_word(stroka_0_all).to_string().parse::<u8>().unwrap();
+    let mut num_cores: u8 = first_word(&conf[0].to_string()).to_string().parse::<u8>().unwrap();
+    let custom_digit = first_word(&conf[1].to_string()).to_string().parse::<String>().unwrap();
 
     println!("===============================");
-    println!("Find Satoshi Public key v0.0.6");
+    println!("Find Satoshi Public key v0.0.7");
     println!("===============================\n");
 
 
@@ -59,7 +56,8 @@ async fn main() {
         bench = true;
         num_cores = 1;
     }
-    println!("CPU CORE:{num_cores}/{} \n", num_cpus::get());
+    print!("CPU CORE:{num_cores}/{} \n", num_cpus::get());
+    print!("CUSTOM DIGIT:{custom_digit}\n");
 
 
     let file_content = match lines_from_file("pub_key.txt") {
@@ -84,8 +82,9 @@ async fn main() {
     for _ in 0..num_cores {
         let clone_database = database.clone();
         let tx = tx.clone();
+        let custom_digit = custom_digit.clone();
         task::spawn_blocking(move || {
-            process(clone_database, bench, tx);
+            process(clone_database, bench, tx,custom_digit);
         });
     }
 
@@ -100,43 +99,47 @@ async fn main() {
     }
 }
 
-fn process(file_content: Arc<HashSet<String>>, bench: bool, tx: Sender<String>) {
+fn process(file_content: Arc<HashSet<String>>, bench: bool, tx: Sender<String>, custom_digit: String) {
     let mut start = Instant::now();
     let mut speed: u64 = 0;
-    let s = Secp256k1::new();
-
-    //в случае хз подставим рабочий секретный ключ
-    let def = SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001").expect("error_nevozmogen");
-    let mut hex = "".to_string();
 
     let mut rng = rand::thread_rng();
 
+    let ice_library = ice_library::IceLibrary::new();
+    ice_library.init_secp256_lib();
 
+    let list_custom: Vec<&str> = custom_digit.split(",").collect();
+    //проверим что длинна правельная
+    if list_custom.len() != 64 { println!("ERROR LEN HEX:{}!=64", list_custom.len()) }
 
+    let mut hex ="".to_string();
     loop {
         hex.clear();
 
-        for _i in 0..64 {
-            hex.push_str(HEX[rng.gen_range(0..16)])
-        }
+        for i in 0..64 {
+            if list_custom[i] == "*" {
+                hex.push_str(HEX[rng.gen_range(0..16)])
+            } else {
+                hex.push_str(&list_custom[i].to_string());
+            }
+        };
 
-        let secret_key = SecretKey::from_str(&*hex).unwrap_or(def);
-        let private_key_u = PrivateKey::new_uncompressed(secret_key, Bitcoin);
-        let public_key_u = PublicKey::from_private_key(&s, &private_key_u);
+        let public_key_u =ice_library.privatekey_to_publickey(hex.as_str());
 
-        if file_content.contains(&public_key_u.to_string()) {
-            let address_u = Address::p2pkh(&public_key_u, Bitcoin);
-            print_and_save(&address_u.to_string(), &private_key_u.to_string(), &secret_key.display_secret().to_string());
+        if file_content.contains(&public_key_u) {
+           let address_u = ice_library.privatekey_to_address(hex.as_str());
+            print_and_save( address_u,&public_key_u, &hex);
         }
 
         if bench {
             speed = speed + 1;
             if start.elapsed() >= Duration::from_secs(1) {
+                let address_u = ice_library.privatekey_to_address(hex.as_str());
                 println!("--------------------------------------------------------");
                 println!("SPEED {speed}/sek", );
+                println!("ADDRESS:{address_u}", );
                 println!("PUBLIC:{public_key_u}");
-                println!("PRIVATE:{private_key_u}");
-                println!("HEX:{}", secret_key.display_secret());
+                println!("HEX:{}", hex);
                 println!("--------------------------------------------------------");
                 start = Instant::now();
                 speed = 0;
@@ -152,13 +155,13 @@ fn process(file_content: Arc<HashSet<String>>, bench: bool, tx: Sender<String>) 
     }
 }
 
-fn print_and_save(adress: &String, key: &String, secret_key: &String) {
-    println!("ADRESS:{}", &adress);
-    println!("PrivateKey:{}", &key);
+fn print_and_save(address:String,key: &String, secret_key: &String) {
+    println!("ADDRES:{}", &address);
+    println!("Public:{}", &key);
     println!("Secret_key:{}", &secret_key);
-    let s = format!("ADRESS:{} PrivateKey:{}\nSecret_key{}\n", &adress, &key, &secret_key);
-    add_v_file("BOBLO.txt", &s);
-    println!("-----------\n-----------\nСохранено в BOBLO.txt-----------\n-----------\n");
+    let s = format!("ADDRESS:{}\nPUBLIC:{}\nHEX{}\n", address,&key, &secret_key);
+    add_v_file("FOUND_SATOSHI.txt", &s);
+    println!("\nСохранено в FOUND_SATOSHI.txt");
 }
 
 fn lines_from_file(filename: impl AsRef<Path>) -> io::Result<Vec<String>> {
